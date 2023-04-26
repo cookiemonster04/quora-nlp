@@ -2,9 +2,9 @@ import torch
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, WeightedRandomSampler
-
+from config import Config
 from tqdm import tqdm
-import datetime
+from datetime import datetime
 import os
 
 import logging
@@ -12,15 +12,14 @@ logger = logging.getLogger(__name__)
 
 class Score:
     def __init__(self, loss=0, true_pos=0, true_neg=0, false_pos=0, false_neg=0):
-        self.total_loss = loss
+        self.total_loss = loss.item() if hasattr(loss, 'item') else loss
         self.true_pos = true_pos
         self.true_neg = true_neg
         self.false_pos = false_pos
         self.false_neg = false_neg
     @staticmethod
     def build(loss, logits, labels):
-        score = Score()
-        score.total_loss += loss
+        score = Score(loss=loss)
         for (yp, y) in zip(logits, labels):
             if round(yp.item()) == 1:
                 if y == 1:
@@ -34,27 +33,30 @@ class Score:
                     score.true_neg += 1
         return score
     def __iadd__(self, arg):
-        self.total_loss += arg.total_loss
+        self.total_loss += arg.total_loss.item() if hasattr(arg.total_loss, 'item') else arg.total_loss
         self.true_pos += arg.true_pos
         self.true_neg += arg.true_neg
         self.false_pos += arg.false_pos
         self.false_neg += arg.false_neg
         return self
     def __add__(self, arg):
-        return Score(self.total_loss+arg.total_loss,
+        total_loss = arg.total_loss.item() if hasattr(arg.total_loss, 'item') else arg.total_loss
+        return Score(self.total_loss+total_loss,
                      self.true_pos+arg.true_pos,
                      self.true_neg+arg.true_neg,
                      self.false_pos+arg.false_pos,
                      self.false_neg+arg.false_neg)
     def __isub__(self, arg):
-        self.total_loss -= arg.total_loss
+        total_loss = arg.total_loss.item() if hasattr(arg.total_loss, 'item') else arg.total_loss
+        self.total_loss -= total_loss
         self.true_pos -= arg.true_pos
         self.true_neg -= arg.true_neg
         self.false_pos -= arg.false_pos
         self.false_neg -= arg.false_neg
         return self
     def __sub__(self, arg):
-        return Score(self.total_loss-arg.total_loss,
+        total_loss = arg.total_loss.item() if hasattr(arg.total_loss, 'item') else arg.total_loss
+        return Score(self.total_loss-total_loss,
                      self.true_pos-arg.true_pos,
                      self.true_neg-arg.true_neg,
                      self.false_pos-arg.false_pos,
@@ -71,28 +73,6 @@ class Score:
         return (self.true_pos+self.true_neg)/len(self)
     def loss(self):
         return self.total_loss/len(self)
-
-class TrainerConfig:
-    epochs = 50
-    batch_size = 32
-    lr = 0.005
-    grad_norm_clip = 1
-    load_path = None
-    write_path = "checkpoints"
-    out_path = None # default stdout
-    n_save = 100
-    n_eval_t = 100
-    n_eval_d = 1
-    avg_interval = 100
-    model_type = 'char'
-    def __init__(self, **kwargs):
-        self.modify(**kwargs)
-    def modify(self, arg_dict=None, **kwargs):
-        if arg_dict is not None:
-            for k,v in arg_dict.items():
-                setattr(self, k, v)
-        for k,v in kwargs.items():
-            setattr(self, k, v)
 
 class Trainer:
     def __init__(self, config):
@@ -131,15 +111,16 @@ class Trainer:
                     writer.add_scalar("Train f1", score.f1())
             if (epoch+1) % config.n_save == 0:
                 logger.info("Saving model...")
-                self.save_checkpoint(model)
+                self.save_checkpoint(model, epoch+1)
             if (epoch+1 == config.epochs or (epoch+1) % config.n_eval_d == 0) and val_data:
                 logger.info("Evaluating Dev...")
-                dev_score = self.evaluate(model, device, val_loader)
+                dev_score = self.evaluate(model, device, val_loader); model.train()
                 writer.add_scalar("Dev loss", dev_score.loss())
                 writer.add_scalar("Dev acc", dev_score.acc())
                 writer.add_scalar("Dev F1", dev_score.f1())
     
     def evaluate(self, model, device, test_loader):
+        model.eval()
         score = Score()
         with torch.no_grad():
             pbar = tqdm(enumerate(test_loader), total=len(test_loader))
@@ -152,9 +133,7 @@ class Trainer:
                 pbar.set_description(f"iter {it} loss: {score.loss()} acc: {score.acc()} f1: {score.f1()}")
             return score
 
-    def save_checkpoint(self, model):
-        if self.config.ckpt_path is not None:
-            ckpt_model = self.model.module if hasattr(model, "module") else self.model
-            logger.info("saving %s", self.config.ckpt_path)
-            filename = datetime.now().strftime('%d-%m-%y-%H_%M_state.pt')
-            torch.save(ckpt_model.state_dict(), os.path.join(self.config.ckpt_path, filename))
+    def save_checkpoint(self, model, epoch):
+        dt_string = datetime.now().strftime("%Y_%b_%d-%H_%M_%S")
+        print("Saving model...")
+        torch.save(model.state_dict(), os.path.join(self.config.ckpt_path, f'{dt_string}_e{epoch}_{self.config.start_time}.state'))
